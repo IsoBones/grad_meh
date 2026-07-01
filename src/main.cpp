@@ -47,6 +47,7 @@
 
 #include "findPbos.h"
 #include "SimplePoint.h"
+#include "wrp8.h"
 
 #include "../addons/main/status_codes.hpp"
 
@@ -284,7 +285,10 @@ void extractMap(const std::string &worldName, const std::string &worldPath, std:
         if (steps[0] || steps[1] || steps[3] || steps[4])
         {
             reportStatus(worldName, "read_wrp", "running");
-            wrp = arma_file_formats::cxx::create_wrp_from_vec(wrp_data);
+            if (isWvr8(wrp_data))
+                populateFromWvr8(wrp_data, wrp);
+            else
+                wrp = arma_file_formats::cxx::create_wrp_from_vec(wrp_data);
             reportStatus(worldName, "read_wrp", "done");
         }
         else
