@@ -346,6 +346,12 @@ void extractMap(const std::string &worldName, const std::string &worldPath, std:
         PLOG_ERROR << ex.what();
         throw;
     }
+    catch (const std::exception& ex) {
+        PLOG_ERROR << "Exception in extract map command";
+        PLOG_ERROR << fmt::format("WRP Path: {}", curWorldPath);
+        PLOG_ERROR << ex.what();
+        throw;
+    }
 
     gradMehIsRunning = false;
     return;

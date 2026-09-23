@@ -21,14 +21,6 @@ struct Cursor {
         return v;
     }
 
-    uint16_t u16() {
-        if (pos + 2 > len) throw std::runtime_error("WVR8: unexpected end of data");
-        uint16_t v;
-        memcpy(&v, buf + pos, 2);
-        pos += 2;
-        return v;
-    }
-
     float f32() {
         if (pos + 4 > len) throw std::runtime_error("WVR8: unexpected end of data");
         float v;
@@ -44,12 +36,14 @@ struct Cursor {
         return s;
     }
 
-    bool eof() const { return pos >= len; }
     size_t remaining() const { return pos < len ? len - pos : 0; }
 };
 
 } // namespace
 
+// Detects the uncompressed 8WVR terrain format by its magic bytes. The format
+// also has an LZSS-compressed variant (no "8WVR" magic); that is not handled
+// here and continues to fall through to the OPRW code path unchanged.
 bool isWvr8(const rust::Vec<uint8_t>& data) {
     return data.size() >= 4 && memcmp(data.data(), "8WVR", 4) == 0;
 }
@@ -91,15 +85,20 @@ void populateFromWvr8(const rust::Vec<uint8_t>& data, arma_file_formats::cxx::Op
             if (slen == 0) break;
             auto name = c.str(slen);
             arma_file_formats::cxx::TextureCxx tex{};
-            tex.texture_filename = rust::String(name.c_str(), name.size());
+            // lossy UTF-8 conversion mirrors the reference parser's String::from_utf8_lossy
+            tex.texture_filename = rust::String::lossy(name.data(), name.size());
             wrp.texures.push_back(std::move(tex));
         }
     }
 
-    // Objects — read until EOF; last entry is a dummy sentinel and is discarded
-    // Each entry: 48-byte transform matrix, u32 object_id, u32 name_len, name bytes
-    std::map<std::string, uint32_t> modelIndex;
-    std::vector<arma_file_formats::cxx::ObjectCxx> objects;
+    // Objects — read every entry until EOF. Each entry is:
+    //   48-byte transform matrix, u32 object_id, u32 name_len, name_len name bytes
+    struct RawObject {
+        arma_file_formats::cxx::TransformMatrixCxx matrix;
+        uint32_t                                   object_id;
+        std::string                                p3d;
+    };
+    std::vector<RawObject> raws;
 
     while (c.remaining() >= 56) { // 48 (matrix) + 4 (id) + 4 (name_len) minimum
         arma_file_formats::cxx::TransformMatrixCxx tm{};
@@ -114,28 +113,31 @@ void populateFromWvr8(const rust::Vec<uint8_t>& data, arma_file_formats::cxx::Op
         if (c.remaining() < name_len) break;
         auto p3d = c.str(name_len);
 
-        arma_file_formats::cxx::ObjectCxx obj{};
-        obj.object_id      = object_id;
-        obj.transform_matrx = std::move(tm);
-        obj.shape_params   = 0;
+        raws.push_back({ std::move(tm), object_id, std::move(p3d) });
+    }
 
-        auto it = modelIndex.find(p3d);
+    // The format always appends a dummy sentinel object; discard it BEFORE building
+    // the model list so its (empty) path never becomes a model entry.
+    if (!raws.empty())
+        raws.pop_back();
+
+    std::map<std::string, uint32_t> modelIndex;
+    for (auto& raw : raws) {
+        arma_file_formats::cxx::ObjectCxx obj{};
+        obj.object_id       = raw.object_id;
+        obj.transform_matrx = std::move(raw.matrix);
+        obj.shape_params    = 0;
+
+        auto it = modelIndex.find(raw.p3d);
         if (it == modelIndex.end()) {
             uint32_t idx = static_cast<uint32_t>(modelIndex.size());
-            modelIndex[p3d] = idx;
-            wrp.models.push_back(rust::String(p3d.c_str(), p3d.size()));
+            modelIndex[raw.p3d] = idx;
+            wrp.models.push_back(rust::String::lossy(raw.p3d.data(), raw.p3d.size()));
             obj.model_index = idx;
         } else {
             obj.model_index = it->second;
         }
 
-        objects.push_back(std::move(obj));
-    }
-
-    // Remove trailing dummy sentinel object appended by the format
-    if (!objects.empty())
-        objects.pop_back();
-
-    for (auto& obj : objects)
         wrp.objects.push_back(std::move(obj));
+    }
 }
